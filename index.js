@@ -6,71 +6,191 @@ const app = new App({
 });
 
 const queues = {};
+const TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
-app.command('/queue', async ({ command, ack, respond }) => {
-  await ack();
+function getKey(channel, threadTs) {
+  return `${channel}-${threadTs}`;
+}
 
-  const args = command.text.split(" ");
-  const action = args[0];
-  const channel = command.channel_id;
-  const user = command.user_id;
+function getQueue(channel, threadTs) {
+  const key = getKey(channel, threadTs);
 
-  if (!queues[channel]) {
-    queues[channel] = { queue: [], current: null };
+  if (!queues[key]) {
+    queues[key] = {
+      queue: [],
+      current: null,
+      timeout: null,
+    };
   }
 
-  const queue = queues[channel];
+  return queues[key];
+}
 
-  if (action === "join") {
-    if (queue.queue.includes(user)) {
-      return respond("You're already in the queue.");
-    }
-
-    queue.queue.push(user);
-
-    if (!queue.current) {
-      queue.current = user;
-      return respond(`<@${user}> it's your turn! 🎉`);
-    }
-
-    return respond(`You're #${queue.queue.length} in the queue.`);
+function clearTimeoutIfExists(queue) {
+  if (queue.timeout) {
+    clearTimeout(queue.timeout);
+    queue.timeout = null;
   }
+}
 
-  if (action === "done") {
-    if (queue.current !== user) {
-      return respond("You're not the current person.");
-    }
+async function startTimeout(queue, channel, threadTs, client) {
+  clearTimeoutIfExists(queue);
 
+  queue.timeout = setTimeout(async () => {
+    if (!queue.current) return;
+
+    const skippedUser = queue.current;
     queue.queue.shift();
 
     if (queue.queue.length > 0) {
       queue.current = queue.queue[0];
-      await respond(`✅ <@${user}> is done.`);
-      await app.client.chat.postMessage({
+
+      await client.chat.postMessage({
         channel,
-        text: `🔔 <@${queue.current}> it's your turn!`
+        thread_ts: threadTs,
+        text: `⏰ <@${skippedUser}> timed out (30 mins).\n🔔 <@${queue.current}> it's your turn!`
       });
+
+      startTimeout(queue, channel, threadTs, client);
     } else {
       queue.current = null;
-      await respond("Queue is now empty.");
+
+      await client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text: `⏰ <@${skippedUser}> timed out.\nQueue is now empty.`
+      });
     }
+  }, TIMEOUT_MS);
+}
+
+function queueBlocks() {
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Thread Queue Controls*"
+      }
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "➕ Join Queue" },
+          action_id: "join_queue",
+          style: "primary"
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "✅ Done" },
+          action_id: "done_queue",
+          style: "danger"
+        }
+      ]
+    }
+  ];
+}
+
+// -------------------------
+// Slash Command (Thread Only)
+// -------------------------
+app.command('/queue', async ({ command, ack, respond, client }) => {
+  await ack();
+
+  if (!command.thread_ts) {
+    return respond({
+      text: "⚠️ `/queue` must be used inside a thread.",
+      response_type: "ephemeral"
+    });
   }
 
-  if (action === "list") {
-    if (queue.queue.length === 0) {
-      return respond("Queue is empty.");
-    }
+  const channel = command.channel_id;
+  const threadTs = command.thread_ts;
 
-    let text = "*Current Queue:*\n";
-    queue.queue.forEach((u, i) => {
-      text += `${i + 1}. <@${u}>\n`;
+  getQueue(channel, threadTs); // ensure queue exists
+
+  await client.chat.postMessage({
+    channel,
+    thread_ts: threadTs,
+    text: "Queue initialized for this thread.",
+    blocks: queueBlocks()
+  });
+});
+
+// -------------------------
+// Join Button
+// -------------------------
+app.action("join_queue", async ({ body, ack, client }) => {
+  await ack();
+
+  const channel = body.channel.id;
+  const threadTs = body.message.thread_ts;
+  const user = body.user.id;
+
+  const queue = getQueue(channel, threadTs);
+
+  if (queue.queue.includes(user)) {
+    return;
+  }
+
+  queue.queue.push(user);
+
+  if (!queue.current) {
+    queue.current = user;
+
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `🎉 <@${user}> it's your turn!`
     });
 
-    return respond(text);
+    startTimeout(queue, channel, threadTs, client);
+  }
+});
+
+// -------------------------
+// Done Button
+// -------------------------
+app.action("done_queue", async ({ body, ack, client }) => {
+  await ack();
+
+  const channel = body.channel.id;
+  const threadTs = body.message.thread_ts;
+  const user = body.user.id;
+
+  const queue = getQueue(channel, threadTs);
+
+  if (queue.current !== user) {
+    return;
+  }
+
+  clearTimeoutIfExists(queue);
+  queue.queue.shift();
+
+  if (queue.queue.length > 0) {
+    queue.current = queue.queue[0];
+
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `✅ <@${user}> is done.\n🔔 <@${queue.current}> it's your turn!`
+    });
+
+    startTimeout(queue, channel, threadTs, client);
+  } else {
+    queue.current = null;
+
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: `✅ <@${user}> is done.\nQueue is now empty.`
+    });
   }
 });
 
 (async () => {
   await app.start(process.env.PORT || 3000);
-  console.log('⚡️ Queue bot running');
+  console.log('⚡️ Advanced thread queue bot running');
 })();
