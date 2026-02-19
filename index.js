@@ -70,7 +70,7 @@ function queueBlocks() {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "*Thread Queue Controls*"
+        text: "*Thread Queue Controls*\nClick to join or mark done."
       }
     },
     {
@@ -93,35 +93,31 @@ function queueBlocks() {
   ];
 }
 
-// -------------------------
-// Slash Command (Thread Only)
-// -------------------------
-app.command('/queue', async ({ command, ack, respond, client }) => {
+// --------------------------------------------------
+// MESSAGE SHORTCUT HANDLER
+// --------------------------------------------------
+app.shortcut('start_queue_shortcut', async ({ shortcut, ack, client }) => {
   await ack();
 
-  if (!command.thread_ts) {
-    return respond({
-      text: "⚠️ `/queue` must be used inside a thread.",
-      response_type: "ephemeral"
-    });
-  }
+  const channel = shortcut.channel.id;
 
-  const channel = command.channel_id;
-  const threadTs = command.thread_ts;
+  // If already in thread, use thread_ts
+  const threadTs =
+    shortcut.message.thread_ts || shortcut.message.ts;
 
-  getQueue(channel, threadTs); // ensure queue exists
+  getQueue(channel, threadTs);
 
   await client.chat.postMessage({
     channel,
     thread_ts: threadTs,
-    text: "Queue initialized for this thread.",
+    text: "🎟 Queue started for this thread.",
     blocks: queueBlocks()
   });
 });
 
-// -------------------------
-// Join Button
-// -------------------------
+// --------------------------------------------------
+// JOIN BUTTON
+// --------------------------------------------------
 app.action("join_queue", async ({ body, ack, client }) => {
   await ack();
 
@@ -131,9 +127,7 @@ app.action("join_queue", async ({ body, ack, client }) => {
 
   const queue = getQueue(channel, threadTs);
 
-  if (queue.queue.includes(user)) {
-    return;
-  }
+  if (queue.queue.includes(user)) return;
 
   queue.queue.push(user);
 
@@ -150,9 +144,9 @@ app.action("join_queue", async ({ body, ack, client }) => {
   }
 });
 
-// -------------------------
-// Done Button
-// -------------------------
+// --------------------------------------------------
+// DONE BUTTON
+// --------------------------------------------------
 app.action("done_queue", async ({ body, ack, client }) => {
   await ack();
 
@@ -162,9 +156,7 @@ app.action("done_queue", async ({ body, ack, client }) => {
 
   const queue = getQueue(channel, threadTs);
 
-  if (queue.current !== user) {
-    return;
-  }
+  if (queue.current !== user) return;
 
   clearTimeoutIfExists(queue);
   queue.queue.shift();
@@ -192,5 +184,5 @@ app.action("done_queue", async ({ body, ack, client }) => {
 
 (async () => {
   await app.start(process.env.PORT || 3000);
-  console.log('⚡️ Advanced thread queue bot running');
+  console.log('⚡️ Thread queue shortcut bot running');
 })();
